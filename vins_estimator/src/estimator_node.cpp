@@ -8,6 +8,9 @@
 #include <cv_bridge/cv_bridge.h>
 #include <opencv2/opencv.hpp>
 
+#include <memory>
+#include <random>
+
 #include "estimator.h"
 #include "parameters.h"
 #include "utility/visualization.h"
@@ -38,6 +41,93 @@ Eigen::Vector3d gyr_0;
 bool init_feature = 0;
 bool init_imu = 1;
 double last_imu_t = 0;
+
+namespace {
+
+template <typename T>
+T getParam(const ros::NodeHandle& nh, const std::string& name) {
+    T result;
+    const bool success = nh.getParam(name, result);
+    if (!success) {
+        throw std::runtime_error("Failed to get parameter");
+    }
+
+    return result;
+}
+
+class ImuNoise {
+    std::mt19937 rng_;
+    std::normal_distribution<> gauss_;
+
+    const double g_;
+
+    const double gyro_bias_stability_norm_;
+    const double accel_bias_stability_norm_;
+    const double min_sample_time_;
+
+    const double gyro_arw_;
+    const double accel_arw_;
+
+    Eigen::Vector3d accel_bias_;
+    Eigen::Vector3d gyro_bias_;
+    ros::Time last_time_;
+
+    Eigen::Vector3d random_vector() {
+        return Eigen::Vector3d(gauss_(rng_), gauss_(rng_), gauss_(rng_));
+    }
+
+  public:
+    ImuNoise(const ros::NodeHandle& nh)
+        : rng_(std::random_device{}()),
+          gauss_(),
+          g_(9.80665),
+          gyro_bias_stability_norm_(
+                  (getParam<double>(nh, "imu/gyro/bias_stability") / 3600 * M_PI
+                   / 180)
+                  / std::sqrt(getParam<double>(nh, "imu/gyro/tau"))),
+          accel_bias_stability_norm_(
+                  (getParam<double>(nh, "imu/accel/bias_stability") * 1e-6 * g_)
+                  / std::sqrt(getParam<double>(nh, "imu/accel/tau"))),
+          min_sample_time_(getParam<double>(nh, "imu/min_sample_time")),
+          gyro_arw_(getParam<double>(nh, "imu/gyro/arw") / std::sqrt(3600.) * M_PI
+                    / 180),
+          accel_arw_(getParam<double>(nh, "imu/accel/arw") * g_ / 1e3),
+          accel_bias_(Eigen::Vector3d::Zero()),
+          gyro_bias_(Eigen::Vector3d::Zero()) {}
+
+    std::pair<Eigen::Vector3d, Eigen::Vector3d> noises(const ros::Time& time) {
+        if (last_time_ == ros::Time(0)) {
+            last_time_ = time;
+            return std::make_pair(Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero());
+        }
+
+        const double dt = (time - last_time_).toSec();
+        const double sqrt_dt = std::sqrt(std::max(dt, min_sample_time_));
+
+        const double gyro_sigma = gyro_arw_ / sqrt_dt;
+        const Eigen::Vector3d gyro_result =
+                random_vector() * gyro_sigma + gyro_bias_;
+        const double gyro_sigma_bias = gyro_bias_stability_norm_ * sqrt_dt;
+        gyro_bias_ += random_vector() * gyro_sigma_bias;
+
+        const double accel_sigma = accel_arw_ / sqrt_dt;
+        const Eigen::Vector3d accel_result =
+                random_vector() * accel_sigma + accel_bias_;
+        const double accel_sigma_bias = accel_bias_stability_norm_ * sqrt_dt;
+        accel_bias_ += random_vector() * accel_sigma_bias;
+
+        last_time_ = time;
+        return std::make_pair(gyro_result, accel_result);
+    }
+};
+
+std::unique_ptr<ImuNoise> imu_noise;
+const double gaussian_noise_;
+const bool add_imu_noise_;
+const bool add_image_noise_;
+
+} // end namespace
+
 
 void predict(const sensor_msgs::ImuConstPtr &imu_msg)
 {
@@ -145,7 +235,23 @@ void imu_callback(const sensor_msgs::ImuConstPtr &imu_msg)
     last_imu_t = imu_msg->header.stamp.toSec();
 
     m_buf.lock();
-    imu_buf.push(imu_msg);
+
+    // NOISIFY IMU HERE
+    const sensor_msgs::Imu::Ptr imu_msg_noisy = boost::make_shared<sensor_msgs::Imu>(*imu_msg);
+
+    if (add_imu_noise_) {
+        const auto noises = imu_noise->noises(imu_msg->header.stamp);
+        imu_msg_noisy->angular_velocity.x += noises.first(0);
+        imu_msg_noisy->angular_velocity.y += noises.first(1);
+        imu_msg_noisy->angular_velocity.z += noises.first(2);
+        imu_msg_noisy->linear_acceleration.x += noises.second(0);
+        imu_msg_noisy->linear_acceleration.y += noises.second(1);
+        imu_msg_noisy->linear_acceleration.z += noises.second(2);
+    }
+
+    // END NOISIFY IMU
+
+    imu_buf.push(imu_msg_noisy);
     m_buf.unlock();
     con.notify_one();
 
@@ -153,7 +259,7 @@ void imu_callback(const sensor_msgs::ImuConstPtr &imu_msg)
 
     {
         std::lock_guard<std::mutex> lg(m_state);
-        predict(imu_msg);
+        predict(imu_msg_noisy);
         std_msgs::Header header = imu_msg->header;
         header.frame_id = "world";
         if (estimator.solver_flag == Estimator::SolverFlag::NON_LINEAR)
@@ -345,6 +451,12 @@ int main(int argc, char **argv)
     ros::console::set_logger_level(ROSCONSOLE_DEFAULT_NAME, ros::console::levels::Info);
     readParameters(n);
     estimator.setParameter();
+
+    imu_noise = std::make_unique<ImuNoise>(n);
+    gaussian_noise_ = getParam<double>(nh_private, "img/gaussian_noise");
+    add_imu_noise_ = getParam<bool>(nh_private, "imu/add_noise");
+    add_image_noise_ = getParam<bool>(nh_private, "img/add_noise");
+
 #ifdef EIGEN_DONT_PARALLELIZE
     ROS_DEBUG("EIGEN_DONT_PARALLELIZE");
 #endif
