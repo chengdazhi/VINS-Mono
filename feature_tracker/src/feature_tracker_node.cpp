@@ -25,8 +25,8 @@ bool first_image_flag = true;
 double last_image_time = 0;
 bool init_pub = 0;
 
-const double gaussian_noise_;
-const bool add_image_noise_;
+double gaussian_noise_;
+bool add_image_noise_;
 
 template <typename T>
 T getParam(const ros::NodeHandle& nh, const std::string& name) {
@@ -75,7 +75,7 @@ void img_callback(const sensor_msgs::ImageConstPtr &img_msg)
     else
         PUB_THIS_FRAME = false;
 
-    cv_bridge::CvImageConstPtr ptr;
+    cv_bridge::CvImagePtr ptr;
     if (img_msg->encoding == "8UC1")
     {
         sensor_msgs::Image img;
@@ -91,10 +91,9 @@ void img_callback(const sensor_msgs::ImageConstPtr &img_msg)
     else
         ptr = cv_bridge::toCvCopy(img_msg, sensor_msgs::image_encodings::MONO8);
 
-    cv::Mat cv_img_noise = ptr->clone();
+    cv::Mat cv_img_noise = ptr->image.clone();
     cv::randn(cv_img_noise, 0, add_image_noise_ ? gaussian_noise_ : 0);
-    ptr = boost::make_shared<cv_bridge::CvImage const>(
-            cv::Mat(cv_img_noise + cv_img));
+    ptr->image = cv::Mat(cv_img_noise + ptr->image);
 
     cv::Mat show_img = ptr->image;
     TicToc t_r;
