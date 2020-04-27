@@ -453,9 +453,9 @@ int main(int argc, char **argv)
     estimator.setParameter();
 
     imu_noise = std::make_unique<ImuNoise>(n);
-    gaussian_noise_ = getParam<double>(nh_private, "img/gaussian_noise");
-    add_imu_noise_ = getParam<bool>(nh_private, "imu/add_noise");
-    add_image_noise_ = getParam<bool>(nh_private, "img/add_noise");
+    gaussian_noise_ = getParam<double>(n, "img/gaussian_noise");
+    add_imu_noise_ = getParam<bool>(n, "imu/add_noise");
+    add_image_noise_ = getParam<bool>(n, "img/add_noise");
 
 #ifdef EIGEN_DONT_PARALLELIZE
     ROS_DEBUG("EIGEN_DONT_PARALLELIZE");
