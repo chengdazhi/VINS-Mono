@@ -25,6 +25,20 @@ bool first_image_flag = true;
 double last_image_time = 0;
 bool init_pub = 0;
 
+const double gaussian_noise_;
+const bool add_image_noise_;
+
+template <typename T>
+T getParam(const ros::NodeHandle& nh, const std::string& name) {
+    T result;
+    const bool success = nh.getParam(name, result);
+    if (!success) {
+        throw std::runtime_error("Failed to get parameter");
+    }
+
+    return result;
+}
+
 void img_callback(const sensor_msgs::ImageConstPtr &img_msg)
 {
     if(first_image_flag)
@@ -76,6 +90,11 @@ void img_callback(const sensor_msgs::ImageConstPtr &img_msg)
     }
     else
         ptr = cv_bridge::toCvCopy(img_msg, sensor_msgs::image_encodings::MONO8);
+
+    cv::Mat cv_img_noise = ptr->clone();
+    cv::randn(cv_img_noise, 0, add_image_noise_ ? gaussian_noise_ : 0);
+    ptr = boost::make_shared<cv_bridge::CvImage const>(
+            cv::Mat(cv_img_noise + cv_img));
 
     cv::Mat show_img = ptr->image;
     TicToc t_r;
@@ -209,6 +228,9 @@ int main(int argc, char **argv)
     ros::NodeHandle n("~");
     ros::console::set_logger_level(ROSCONSOLE_DEFAULT_NAME, ros::console::levels::Info);
     readParameters(n);
+
+    gaussian_noise_ = getParam<double>(n, "img/gaussian_noise");
+    add_image_noise_ = getParam<bool>(n, "img/add_noise");
 
     for (int i = 0; i < NUM_OF_CAM; i++)
         trackerData[i].readIntrinsicParameter(CAM_NAMES[i]);
