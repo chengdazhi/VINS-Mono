@@ -6,10 +6,57 @@
 #include <std_msgs/Bool.h>
 #include <cv_bridge/cv_bridge.h>
 #include <message_filters/subscriber.h>
+#include <random>
 
 #include "feature_tracker.h"
 
 #define SHOW_UNDISTORTION 0
+
+
+template <typename T>
+T getParam(const ros::NodeHandle& nh, const std::string& name) {
+    T result;
+    const bool success = nh.getParam(name, result);
+    if (!success) {
+        throw std::runtime_error("Failed to get parameter");
+    }
+
+    return result;
+}
+
+
+
+class SAPNoise {
+    std::mt19937 rng_;
+    const double prob_;
+
+  public:
+    SAPNoise(const ros::NodeHandle& nh)
+        : rng_(std::random_device{}()),
+          prob_(getParam<double>(nh, "img/sap/prob")) {}
+
+    cv::Mat shake(const cv::Mat& in) {
+        cv::Mat out = in.clone();
+
+        std::uniform_int_distribution<int> rand_row(0, in.rows - 1);
+        std::uniform_int_distribution<int> rand_col(0, in.cols - 1);
+        std::bernoulli_distribution p(0.5);
+
+        const int n = in.rows * in.cols * prob_;
+
+        for (int count = 0; count < n; count++) {
+            const int row = rand_row(rng_);
+            const int col = rand_col(rng_);
+            if (p(rng_)) {
+                out.at<uchar>(row, col) = 0;
+            } else {
+                out.at<uchar>(row, col) = 255;
+            }
+        }
+
+        return out;
+    }
+};
 
 vector<uchar> r_status;
 vector<float> r_err;
@@ -25,19 +72,11 @@ bool first_image_flag = true;
 double last_image_time = 0;
 bool init_pub = 0;
 
+SAPNoise* sap_noise_;
 double gaussian_noise_;
 bool add_image_noise_;
+bool add_sap_noise_;
 
-template <typename T>
-T getParam(const ros::NodeHandle& nh, const std::string& name) {
-    T result;
-    const bool success = nh.getParam(name, result);
-    if (!success) {
-        throw std::runtime_error("Failed to get parameter");
-    }
-
-    return result;
-}
 
 void img_callback(const sensor_msgs::ImageConstPtr &img_msg)
 {
@@ -93,7 +132,12 @@ void img_callback(const sensor_msgs::ImageConstPtr &img_msg)
 
     cv::Mat cv_img_noise = ptr->image.clone();
     cv::randn(cv_img_noise, 0, add_image_noise_ ? gaussian_noise_ : 0);
-    ptr->image = cv::Mat(cv_img_noise + ptr->image);
+    cv::Mat cv_img_noisy = cv::Mat(cv_img_noise + ptr->image);
+
+    if (add_sap_noise_) {
+        cv_img_noisy = sap_noise_->shake(cv_img_noisy);
+    }
+    ptr->image = cv_img_noisy;
 
     cv::Mat show_img = ptr->image;
     TicToc t_r;
@@ -230,6 +274,8 @@ int main(int argc, char **argv)
 
     gaussian_noise_ = getParam<double>(n, "img/gaussian_noise");
     add_image_noise_ = getParam<bool>(n, "img/add_noise");
+    add_sap_noise_ = getParam<bool>(n, "img/sap/add_noise");
+    sap_noise_ = new SAPNoise(n);
 
     for (int i = 0; i < NUM_OF_CAM; i++)
         trackerData[i].readIntrinsicParameter(CAM_NAMES[i]);

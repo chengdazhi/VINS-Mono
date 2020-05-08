@@ -122,9 +122,9 @@ class ImuNoise {
 };
 
 std::unique_ptr<ImuNoise> imu_noise;
-const double gaussian_noise_;
-const bool add_imu_noise_;
-const bool add_image_noise_;
+double gaussian_noise_;
+bool add_imu_noise_;
+bool add_image_noise_;
 
 } // end namespace
 
@@ -227,11 +227,12 @@ getMeasurements()
 
 void imu_callback(const sensor_msgs::ImuConstPtr &imu_msg)
 {
-    if (imu_msg->header.stamp.toSec() <= last_imu_t)
-    {
-        ROS_WARN("imu message in disorder!");
-        return;
-    }
+    // if (imu_msg->header.stamp.toSec() <= last_imu_t)
+    // {
+    //     ROS_WARN("imu message in disorder!");
+    //     cerr << fixed << last_imu_t << " >= " << imu_msg->header.stamp.toSec() << endl;        
+    //     return;
+    // }
     last_imu_t = imu_msg->header.stamp.toSec();
 
     m_buf.lock();
@@ -452,7 +453,7 @@ int main(int argc, char **argv)
     readParameters(n);
     estimator.setParameter();
 
-    imu_noise = std::make_unique<ImuNoise>(n);
+    imu_noise.reset(new ImuNoise(n));
     gaussian_noise_ = getParam<double>(n, "img/gaussian_noise");
     add_imu_noise_ = getParam<bool>(n, "imu/add_noise");
     add_image_noise_ = getParam<bool>(n, "img/add_noise");
